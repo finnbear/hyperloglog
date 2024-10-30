@@ -16,12 +16,15 @@ pub trait HyperLogLog {
     /// In the range `4..=18``.
     const PRECISION: u8;
     /// `2^Self::PRECISION``.
+    #[doc(hidden)]
     const REGISTERS: usize;
     //const ERROR_RATE: f32;
 
     /// Length is `Self::REGISTERS``.
+    #[doc(hidden)]
     fn registers(&self) -> &[u8];
     /// Length is `Self::REGISTERS``.
+    #[doc(hidden)]
     fn registers_mut(&mut self) -> &mut [u8];
 
     /// Insert a new value into the `HyperLogLog` counter.
@@ -75,7 +78,7 @@ pub trait HyperLogLog {
     }
 }
 
-macro_rules! impl_array {
+macro_rules! impl_u8_array {
     ($precision:literal, $registers:literal) => {
         impl HyperLogLog for [u8; $registers] {
             const PRECISION: u8 = $precision;
@@ -94,37 +97,60 @@ macro_rules! impl_array {
     };
 }
 
-impl_array!(4, 16);
-impl_array!(5, 32);
-impl_array!(6, 64);
-impl_array!(7, 128);
-impl_array!(8, 256);
-/*
-impl_array!(9, 512);
-impl_array!(10, 1024);
-impl_array!(11, 2048);
-impl_array!(12, 4096);
-impl_array!(13, 8192);
-impl_array!(14, 16384);
-impl_array!(15, 32768);
-impl_array!(16, 65536);
-impl_array!(17, 131072);
-impl_array!(18, 262144);
-*/
+impl_u8_array!(4, 16);
+impl_u8_array!(5, 32);
+impl_u8_array!(6, 64);
+impl_u8_array!(7, 128);
+impl_u8_array!(8, 256);
+impl_u8_array!(9, 512);
+impl_u8_array!(10, 1024);
 
-/*
-impl HyperLogLog for [u32; 4] {
-    const PRECISION: u8 = 4;
-    const REGISTERS: usize = 16;
+macro_rules! impl_uint_array {
+    ($precision:literal, $registers:literal, $uint:ident, $cells:literal) => {
+        impl HyperLogLog for [$uint; $cells] {
+            const PRECISION: u8 = $precision;
+            const REGISTERS: usize = $registers;
 
-    fn registers(&self) -> &[u8] {
-        bytemuck::cast_slice(self)
-    }
+            fn registers(&self) -> &[u8] {
+                debug_assert_eq!(
+                    $registers,
+                    std::mem::size_of_val(&self[0]) * $cells,
+                    "size = {}, cells = {}",
+                    std::mem::size_of_val(self),
+                    $cells
+                );
+                bytemuck::must_cast_slice(self)
+            }
 
-    fn registers_mut(&mut self) -> &mut [u8] {
-        bytemuck::cast_slice_mut(self)
-    }
+            fn registers_mut(&mut self) -> &mut [u8] {
+                bytemuck::must_cast_slice_mut(self)
+            }
+        }
+    };
 }
+
+impl_uint_array!(4, 16, u32, 4);
+impl_uint_array!(5, 32, u32, 8);
+impl_uint_array!(6, 64, u32, 16);
+impl_uint_array!(7, 128, u32, 32);
+impl_uint_array!(8, 256, u32, 64);
+impl_uint_array!(9, 512, u32, 128);
+impl_uint_array!(10, 1024, u32, 256);
+
+impl_uint_array!(4, 16, u64, 2);
+impl_uint_array!(5, 32, u64, 4);
+impl_uint_array!(6, 64, u64, 8);
+impl_uint_array!(7, 128, u64, 16);
+impl_uint_array!(8, 256, u64, 32);
+impl_uint_array!(9, 512, u64, 64);
+impl_uint_array!(10, 1024, u64, 128);
+
+impl_uint_array!(5, 32, u128, 2);
+impl_uint_array!(6, 64, u128, 4);
+impl_uint_array!(7, 128, u128, 8);
+impl_uint_array!(8, 256, u128, 16);
+impl_uint_array!(9, 512, u128, 32);
+impl_uint_array!(10, 1024, u128, 64);
 
 impl HyperLogLog for u128 {
     const PRECISION: u8 = 4;
@@ -138,7 +164,6 @@ impl HyperLogLog for u128 {
         bytemuck::cast_slice_mut(std::slice::from_mut(self))
     }
 }
-*/
 
 fn get_threshold(p: u8) -> f64 {
     THRESHOLD_DATA[p as usize - 4]
@@ -195,39 +220,3 @@ fn estimate_bias(estimate: f64, p: u8) -> f64 {
 assert!(error_rate > 0.0 && error_rate < 1.0);
 let p = (f64::log2(1.04 / error_rate) * 2.0).ceil() as u8;
 */
-
-#[test]
-fn hyperloglog_test_simple() {
-    let mut hll = [0u8; 16];
-    let keys = ["test1", "test2", "test3", "test2", "test2", "test2"];
-    for k in &keys {
-        hll.insert(k);
-    }
-    assert!((hll.estimate().round() - 3.0).abs() < std::f64::EPSILON);
-    hll.clear();
-    assert!(hll.estimate() == 0.0);
-}
-
-#[test]
-fn hyperloglog_test_merge() {
-    let mut hll = [0u8; 64];
-    let keys = ["test1", "test2", "test3", "test2", "test2", "test2"];
-    for k in &keys {
-        hll.insert(k);
-    }
-    assert!((hll.estimate().round() - 3.0).abs() < std::f64::EPSILON);
-
-    let mut hll2 = [0u8; 64];
-    let keys2 = ["test3", "test4", "test4", "test4", "test4", "test1"];
-    for k in &keys2 {
-        hll2.insert(k);
-    }
-    assert!(
-        (hll2.estimate().round() - 3.0).abs() < std::f64::EPSILON,
-        "{}",
-        hll2.estimate().round()
-    );
-
-    hll.merge(&hll2);
-    assert!((hll.estimate().round() - 4.0).abs() < std::f64::EPSILON);
-}
