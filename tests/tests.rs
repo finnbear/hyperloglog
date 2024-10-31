@@ -54,7 +54,7 @@ fn test_precisions() {
     test_precision::<[u8; 256]>();
     test_precision::<[u8; 512]>();
     test_precision::<[u8; 1024]>();
-    test_precision::<[u8; 2048]>();
+    assert!(test_precision::<[u8; 2048]>() < 0.25);
 }
 
 #[test]
