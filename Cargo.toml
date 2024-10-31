@@ -8,6 +8,7 @@ repository = "https://github.com/finnbear/hyperloglog"
 publish = false
 
 [dependencies]
+arcode = "0.2.4"
 bytecount = "0.6"
 bytemuck = { version = "1.19.0", features = ["must_cast"] }
 siphasher = "1"

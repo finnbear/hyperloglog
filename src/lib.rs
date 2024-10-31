@@ -7,9 +7,22 @@
 #![allow(clippy::unreadable_literal)]
 
 mod weights;
+use arcode::{
+    bitbit::{BitReader, BitWriter, MSB},
+    ArithmeticDecoder, ArithmeticEncoder, EOFKind, Model,
+};
 use siphasher::sip::SipHasher13;
-use std::hash::{Hash, Hasher};
+use std::io::{Cursor, Result};
+use std::{
+    hash::{Hash, Hasher},
+    io::ErrorKind,
+};
 use weights::{BIAS_DATA, RAW_ESTIMATE_DATA, THRESHOLD_DATA};
+
+pub enum DecompressionError {
+    UnexpectedEof,
+    ExpectedEof,
+}
 
 /// A HyperLogLog counter. Length must be a power of 2 from 2^4 to 2^18, inclusive.
 pub trait HyperLogLog {
@@ -76,6 +89,61 @@ pub trait HyperLogLog {
     fn clear(&mut self) {
         self.registers_mut().fill(0);
     }
+
+    fn compress(&self) -> Vec<u8> {
+        let data = self.registers();
+
+        let mut model = Model::builder()
+            .num_symbols(compression_symbols(Self::PRECISION))
+            .eof(EOFKind::None)
+            .build();
+        let compressed = Cursor::new(vec![]);
+        let mut compressed_writer = BitWriter::new(compressed);
+        let mut encoder = ArithmeticEncoder::new(COMPRESSION_PRECISION);
+
+        for &sym in data {
+            encoder
+                .encode(
+                    sym.min(64 - Self::PRECISION) as u32,
+                    &model,
+                    &mut compressed_writer,
+                )
+                .unwrap();
+            model.update_symbol(sym as u32);
+        }
+
+        // encoder.encode(model.eof(), &model, &mut compressed_writer).unwrap();
+        encoder.finish_encode(&mut compressed_writer).unwrap();
+        compressed_writer.pad_to_byte().unwrap();
+
+        compressed_writer.get_ref().get_ref().clone()
+    }
+
+    fn decompress(&mut self, data: &[u8]) -> Result<()> {
+        let mut model = Model::builder()
+            .num_symbols(compression_symbols(Self::PRECISION))
+            .eof(EOFKind::None)
+            .build();
+
+        let mut input_reader = BitReader::<_, MSB>::new(data);
+        let mut decoder = ArithmeticDecoder::new(COMPRESSION_PRECISION);
+
+        for decompressed in self.registers_mut() {
+            let sym = decoder
+                .decode(&model, &mut input_reader)
+                .map_err(|_| std::io::Error::new(ErrorKind::UnexpectedEof, "unexpected EOF"))?;
+            model.update_symbol(sym);
+            *decompressed = sym as u8;
+        }
+
+        Ok(())
+    }
+}
+
+const COMPRESSION_PRECISION: u64 = 48;
+
+fn compression_symbols(precision: u8) -> u32 {
+    64 + 1 - precision as u32
 }
 
 macro_rules! impl_u8_array {

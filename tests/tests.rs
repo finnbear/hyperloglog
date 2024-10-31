@@ -1,9 +1,10 @@
 use hyperloglog::HyperLogLog;
 
-fn test_accuracy<T: HyperLogLog>(mut hll: T) -> f64 {
+fn test_accuracy<T: HyperLogLog + Copy + std::fmt::Debug + PartialEq>(mut hll: T) -> f64 {
     let mut count = 1;
     let mut max_error = f64::NEG_INFINITY;
     let mut max_error_count = 0;
+    let mut max_compressed_size = 0;
     while count < 1000000 {
         const SAMPLES: usize = 64;
 
@@ -13,6 +14,11 @@ fn test_accuracy<T: HyperLogLog>(mut hll: T) -> f64 {
                 hll.insert(&rand::random::<u128>());
             }
             let estimate = hll.estimate();
+            let compressed = hll.compress();
+            max_compressed_size = max_compressed_size.max(compressed.len());
+            let mut decompressed = hll;
+            decompressed.decompress(&compressed).unwrap();
+            assert_eq!(hll, decompressed);
             let error = (estimate - count as f64).abs() / count as f64;
             if error > max_error {
                 max_error = error;
@@ -23,8 +29,9 @@ fn test_accuracy<T: HyperLogLog>(mut hll: T) -> f64 {
         count *= 10;
     }
     println!(
-        "with {}, {max_error:.3} (at {max_error_count:>6})",
-        T::PRECISION
+        "with {}, {max_error:.3} (at {max_error_count:>6}), size {:.2}",
+        T::PRECISION,
+        max_compressed_size as f32 / T::REGISTERS as f32
     );
     max_error
 }
@@ -62,7 +69,7 @@ fn test_accuracies() {
     test_accuracy([0u128; 8]);
     test_accuracy([0u128; 16]);
     test_accuracy([0u128; 32]);
-    test_accuracy([0u128; 64]);
+    assert!(test_accuracy([0u128; 64]) < 0.20);
     println!();
 }
 
