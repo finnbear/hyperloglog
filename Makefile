@@ -1,2 +1,2 @@
 test:
-	cargo test --release -- --nocapture
+	cargo test --features serde --release -- --nocapture

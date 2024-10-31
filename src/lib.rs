@@ -12,32 +12,94 @@ use arcode::{
     ArithmeticDecoder, ArithmeticEncoder, EOFKind, Model,
 };
 use siphasher::sip::SipHasher13;
-use std::io::{Cursor, Result};
-use std::{
-    hash::{Hash, Hasher},
-    io::ErrorKind,
-};
+use std::hash::{Hash, Hasher};
+use std::{fmt::Debug, io::Cursor};
 use weights::{BIAS_DATA, RAW_ESTIMATE_DATA, THRESHOLD_DATA};
 
-pub enum DecompressionError {
-    UnexpectedEof,
-    ExpectedEof,
+/// An approximate counter for distinct elements.
+#[derive(Clone, PartialEq, Eq)]
+pub struct HyperLogLog<R>(R);
+
+impl<R> Debug for HyperLogLog<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HyperLogLog").finish_non_exhaustive()
+    }
 }
 
-/// A HyperLogLog counter. Length must be a power of 2 from 2^4 to 2^18, inclusive.
-pub trait HyperLogLog {
-    /// In the range `4..=18``.
+impl<R: Registers> Default for HyperLogLog<R> {
+    fn default() -> Self {
+        Self(R::zero())
+    }
+}
+
+impl<R: Registers> HyperLogLog<R> {
+    /// Count an item if it is distinct.
+    pub fn insert<V: Hash>(&mut self, v: &V) {
+        self.0.insert(v);
+    }
+
+    /// Estimate the number of distinct items inserted.
+    pub fn estimate(&self) -> u64 {
+        self.0.estimate().round() as u64
+    }
+
+    /// Forgets previous insertions.
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<R: Registers> serde::Serialize for HyperLogLog<R> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_bytes(&self.0.compress())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, R: Registers> serde::Deserialize<'de> for HyperLogLog<R> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor<R>(std::marker::PhantomData<R>);
+        impl<'de, R: Registers> serde::de::Visitor<'de> for Visitor<R> {
+            type Value = HyperLogLog<R>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("hyperloglog bytes")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let mut ret = HyperLogLog::<R>::default();
+                ret.0
+                    .decompress(v)
+                    .map_err(|_| serde::de::Error::custom("hyperloglog bytes too short"))?;
+                Ok(ret)
+            }
+        }
+        deserializer.deserialize_bytes(Visitor::<R>(std::marker::PhantomData))
+    }
+}
+
+/// Storage for [`HyperLogLog`]. Larger ones are more precise.
+pub trait Registers: Clone + PartialEq + Eq {
+    /// In the range `4..=18`.
     const PRECISION: u8;
-    /// `2^Self::PRECISION``.
-    #[doc(hidden)]
+    /// `2^Self::PRECISION`.
     const REGISTERS: usize;
     //const ERROR_RATE: f32;
 
-    /// Length is `Self::REGISTERS``.
-    #[doc(hidden)]
+    fn zero() -> Self;
+    /// Length is [`Self::REGISTERS`].
     fn registers(&self) -> &[u8];
-    /// Length is `Self::REGISTERS``.
-    #[doc(hidden)]
+    /// Length is [`Self::REGISTERS`].
     fn registers_mut(&mut self) -> &mut [u8];
 
     /// Insert a new value into the `HyperLogLog` counter.
@@ -97,7 +159,7 @@ pub trait HyperLogLog {
             .num_symbols(compression_symbols(Self::PRECISION))
             .eof(EOFKind::None)
             .build();
-        let compressed = Cursor::new(vec![]);
+        let compressed = Cursor::new(Vec::new());
         let mut compressed_writer = BitWriter::new(compressed);
         let mut encoder = ArithmeticEncoder::new(COMPRESSION_PRECISION);
 
@@ -119,7 +181,7 @@ pub trait HyperLogLog {
         compressed_writer.get_ref().get_ref().clone()
     }
 
-    fn decompress(&mut self, data: &[u8]) -> Result<()> {
+    fn decompress(&mut self, data: &[u8]) -> Result<(), ()> {
         let mut model = Model::builder()
             .num_symbols(compression_symbols(Self::PRECISION))
             .eof(EOFKind::None)
@@ -129,9 +191,7 @@ pub trait HyperLogLog {
         let mut decoder = ArithmeticDecoder::new(COMPRESSION_PRECISION);
 
         for decompressed in self.registers_mut() {
-            let sym = decoder
-                .decode(&model, &mut input_reader)
-                .map_err(|_| std::io::Error::new(ErrorKind::UnexpectedEof, "unexpected EOF"))?;
+            let sym = decoder.decode(&model, &mut input_reader).map_err(|_| ())?;
             model.update_symbol(sym);
             *decompressed = sym as u8;
         }
@@ -148,9 +208,13 @@ fn compression_symbols(precision: u8) -> u32 {
 
 macro_rules! impl_u8_array {
     ($precision:literal, $registers:literal) => {
-        impl HyperLogLog for [u8; $registers] {
+        impl Registers for [u8; $registers] {
             const PRECISION: u8 = $precision;
             const REGISTERS: usize = $registers;
+
+            fn zero() -> Self {
+                [0; $registers]
+            }
 
             #[inline(always)]
             fn registers(&self) -> &[u8] {
@@ -172,66 +236,7 @@ impl_u8_array!(7, 128);
 impl_u8_array!(8, 256);
 impl_u8_array!(9, 512);
 impl_u8_array!(10, 1024);
-
-macro_rules! impl_uint_array {
-    ($precision:literal, $registers:literal, $uint:ident, $cells:literal) => {
-        impl HyperLogLog for [$uint; $cells] {
-            const PRECISION: u8 = $precision;
-            const REGISTERS: usize = $registers;
-
-            fn registers(&self) -> &[u8] {
-                debug_assert_eq!(
-                    $registers,
-                    std::mem::size_of_val(&self[0]) * $cells,
-                    "size = {}, cells = {}",
-                    std::mem::size_of_val(self),
-                    $cells
-                );
-                bytemuck::must_cast_slice(self)
-            }
-
-            fn registers_mut(&mut self) -> &mut [u8] {
-                bytemuck::must_cast_slice_mut(self)
-            }
-        }
-    };
-}
-
-impl_uint_array!(4, 16, u32, 4);
-impl_uint_array!(5, 32, u32, 8);
-impl_uint_array!(6, 64, u32, 16);
-impl_uint_array!(7, 128, u32, 32);
-impl_uint_array!(8, 256, u32, 64);
-impl_uint_array!(9, 512, u32, 128);
-impl_uint_array!(10, 1024, u32, 256);
-
-impl_uint_array!(4, 16, u64, 2);
-impl_uint_array!(5, 32, u64, 4);
-impl_uint_array!(6, 64, u64, 8);
-impl_uint_array!(7, 128, u64, 16);
-impl_uint_array!(8, 256, u64, 32);
-impl_uint_array!(9, 512, u64, 64);
-impl_uint_array!(10, 1024, u64, 128);
-
-impl_uint_array!(5, 32, u128, 2);
-impl_uint_array!(6, 64, u128, 4);
-impl_uint_array!(7, 128, u128, 8);
-impl_uint_array!(8, 256, u128, 16);
-impl_uint_array!(9, 512, u128, 32);
-impl_uint_array!(10, 1024, u128, 64);
-
-impl HyperLogLog for u128 {
-    const PRECISION: u8 = 4;
-    const REGISTERS: usize = 16;
-
-    fn registers(&self) -> &[u8] {
-        bytemuck::cast_slice(std::slice::from_ref(self))
-    }
-
-    fn registers_mut(&mut self) -> &mut [u8] {
-        bytemuck::cast_slice_mut(std::slice::from_mut(self))
-    }
-}
+impl_u8_array!(11, 2048);
 
 fn get_threshold(p: u8) -> f64 {
     THRESHOLD_DATA[p as usize - 4]

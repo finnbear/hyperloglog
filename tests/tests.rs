@@ -1,9 +1,11 @@
-use hyperloglog::HyperLogLog;
+use hyperloglog::{HyperLogLog, Registers};
 
-fn test_accuracy<T: HyperLogLog + Copy + std::fmt::Debug + PartialEq>(mut hll: T) -> f64 {
+fn test_accuracy<R: Registers>() -> f64 {
+    let mut hll = HyperLogLog::<R>::default();
     let mut count = 1;
     let mut max_error = f64::NEG_INFINITY;
     let mut max_error_count = 0;
+    let mut min_compressed_size = usize::MAX;
     let mut max_compressed_size = 0;
     while count < 1000000 {
         const SAMPLES: usize = 64;
@@ -14,12 +16,12 @@ fn test_accuracy<T: HyperLogLog + Copy + std::fmt::Debug + PartialEq>(mut hll: T
                 hll.insert(&rand::random::<u128>());
             }
             let estimate = hll.estimate();
-            let compressed = hll.compress();
-            max_compressed_size = max_compressed_size.max(compressed.len());
-            let mut decompressed = hll;
-            decompressed.decompress(&compressed).unwrap();
-            assert_eq!(hll, decompressed);
-            let error = (estimate - count as f64).abs() / count as f64;
+            let compressed = bincode::serialize(&hll).unwrap();
+            min_compressed_size = min_compressed_size.min(compressed.len() - 8);
+            max_compressed_size = max_compressed_size.max(compressed.len() - 8);
+            let decompressed = bincode::deserialize::<HyperLogLog<R>>(&compressed).unwrap();
+            assert!(hll == decompressed);
+            let error = (estimate as f64 - count as f64).abs() / count as f64;
             if error > max_error {
                 max_error = error;
                 max_error_count = count;
@@ -29,48 +31,24 @@ fn test_accuracy<T: HyperLogLog + Copy + std::fmt::Debug + PartialEq>(mut hll: T
         count *= 10;
     }
     println!(
-        "with {}, {max_error:.3} (at {max_error_count:>6}), size {:.2}",
-        T::PRECISION,
-        max_compressed_size as f32 / T::REGISTERS as f32
+        "with {}, {max_error:.3} (at {max_error_count:>6}), size {:.2} - {:.2}",
+        R::PRECISION,
+        min_compressed_size as f32 / R::REGISTERS as f32,
+        max_compressed_size as f32 / R::REGISTERS as f32
     );
     max_error
 }
 
 #[test]
 fn test_accuracies() {
-    println!("u8");
-    test_accuracy([0u8; 16]);
-    test_accuracy([0u8; 32]);
-    test_accuracy([0u8; 64]);
-    test_accuracy([0u8; 128]);
-    test_accuracy([0u8; 256]);
-    println!();
-
-    println!("u32");
-    test_accuracy([0u32; 4]);
-    test_accuracy([0u32; 8]);
-    test_accuracy([0u32; 16]);
-    test_accuracy([0u32; 32]);
-    test_accuracy([0u32; 64]);
-    println!();
-
-    println!("u64");
-    test_accuracy([0u64; 2]);
-    test_accuracy([0u64; 4]);
-    test_accuracy([0u64; 8]);
-    test_accuracy([0u64; 16]);
-    test_accuracy([0u64; 32]);
-    println!();
-
-    println!("u128");
-    test_accuracy(0u128);
-    test_accuracy([0u128; 2]);
-    test_accuracy([0u128; 4]);
-    test_accuracy([0u128; 8]);
-    test_accuracy([0u128; 16]);
-    test_accuracy([0u128; 32]);
-    assert!(test_accuracy([0u128; 64]) < 0.20);
-    println!();
+    test_accuracy::<[u8; 16]>();
+    test_accuracy::<[u8; 32]>();
+    test_accuracy::<[u8; 64]>();
+    test_accuracy::<[u8; 128]>();
+    test_accuracy::<[u8; 256]>();
+    test_accuracy::<[u8; 512]>();
+    test_accuracy::<[u8; 1024]>();
+    test_accuracy::<[u8; 2048]>();
 }
 
 #[test]
