@@ -7,7 +7,7 @@ fn test_accuracy<R: Registers>() -> f64 {
     let mut max_error_count = 0;
     let mut min_compressed_size = usize::MAX;
     let mut max_compressed_size = 0;
-    while count < 1000000 {
+    while count < 10000000 {
         const SAMPLES: usize = 64;
 
         for _ in 0..SAMPLES {
@@ -16,6 +16,11 @@ fn test_accuracy<R: Registers>() -> f64 {
                 hll.insert(&rand::random::<u128>());
             }
             let estimate = hll.estimate();
+
+            let json = serde_json::to_string(&hll).unwrap();
+            let unjson = serde_json::from_str::<HyperLogLog<R>>(&json).unwrap();
+            assert!(hll == unjson);
+
             let compressed = bincode::serialize(&hll).unwrap();
             min_compressed_size = min_compressed_size.min(compressed.len() - 8);
             max_compressed_size = max_compressed_size.max(compressed.len() - 8);

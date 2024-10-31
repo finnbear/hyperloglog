@@ -50,12 +50,34 @@ impl<R: Registers> HyperLogLog<R> {
 }
 
 #[cfg(feature = "serde")]
+thread_local! {
+    static BUFFER: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::default();
+}
+
+#[cfg(feature = "serde")]
 impl<R: Registers> serde::Serialize for HyperLogLog<R> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        serializer.serialize_bytes(&self.0.compress())
+        let compressed = self.0.compress();
+        if serializer.is_human_readable() {
+            use base64::prelude::*;
+
+            BUFFER.with(|buffer| {
+                let mut buffer = buffer.borrow_mut();
+                buffer.clear();
+                // SAFETY: An empty `Vec<u8>` is always valid UTF-8.
+                let mut string =
+                    unsafe { String::from_utf8_unchecked(std::mem::take(&mut *buffer)) };
+                BASE64_STANDARD_NO_PAD.encode_string(&compressed, &mut string);
+                let result = serializer.serialize_str(&string);
+                *buffer = string.into_bytes();
+                result
+            })
+        } else {
+            serializer.serialize_bytes(&compressed)
+        }
     }
 }
 
@@ -70,7 +92,26 @@ impl<'de, R: Registers> serde::Deserialize<'de> for HyperLogLog<R> {
             type Value = HyperLogLog<R>;
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("hyperloglog bytes")
+                f.write_str("hyperloglog base64 str or bytes")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                use base64::prelude::*;
+                BUFFER.with(|buffer| {
+                    let mut buffer = buffer.borrow_mut();
+                    buffer.clear();
+                    BASE64_STANDARD_NO_PAD
+                        .decode_vec(v, &mut *buffer)
+                        .map_err(|_| serde::de::Error::custom("hyperloglog invaild base64"))?;
+                    let mut ret = HyperLogLog::<R>::default();
+                    ret.0
+                        .decompress(&buffer)
+                        .map_err(|_| serde::de::Error::custom("hyperloglog bytes too short"))?;
+                    Ok(ret)
+                })
             }
 
             fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
@@ -84,7 +125,11 @@ impl<'de, R: Registers> serde::Deserialize<'de> for HyperLogLog<R> {
                 Ok(ret)
             }
         }
-        deserializer.deserialize_bytes(Visitor::<R>(std::marker::PhantomData))
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_str(Visitor::<R>(std::marker::PhantomData))
+        } else {
+            deserializer.deserialize_bytes(Visitor::<R>(std::marker::PhantomData))
+        }
     }
 }
 
