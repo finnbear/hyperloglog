@@ -43,6 +43,10 @@ impl<R: Registers> HyperLogLog<R> {
         self.0.estimate().round() as u64
     }
 
+    pub fn merge(&mut self, other: &Self) {
+        self.0.merge(&other.0);
+    }
+
     /// Forgets previous insertions.
     pub fn clear(&mut self) {
         self.0.clear();
