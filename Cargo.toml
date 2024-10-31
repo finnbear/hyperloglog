@@ -8,7 +8,7 @@ repository = "https://github.com/finnbear/hyperloglog"
 publish = false
 
 [dependencies]
-arcode = "0.2.4"
+arcode = { version = "0.2.4", optional = true }
 base64 = { version = "0.22.1", optional = true }
 bytecount = "0.6"
 bytemuck = { version = "1.19.0", features = ["must_cast"] }
@@ -23,4 +23,4 @@ serde_json = "1.0"
 
 [features]
 default = []
-serde = ["dep:serde", "dep:base64"]
+serde = ["arcode", "dep:serde", "dep:base64"]

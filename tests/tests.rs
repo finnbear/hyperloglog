@@ -20,7 +20,7 @@ fn test_precision<R: Registers>() -> f64 {
                 }
                 hll.insert(&rand::random::<u128>());
             }
-            let estimate = hll.estimate();
+            let estimate = hll.cardinality();
 
             let compressed = bincode::serialize(&hll).unwrap();
             min_compressed_size = min_compressed_size.min(compressed.len() - 8);
@@ -64,9 +64,9 @@ fn hyperloglog_test_simple() {
     for k in &keys {
         hll.insert(k);
     }
-    assert_eq!(hll.estimate(), 3);
+    assert_eq!(hll.cardinality(), 3);
     hll.clear();
-    assert_eq!(hll.estimate(), 0);
+    assert_eq!(hll.cardinality(), 0);
 }
 
 #[test]
@@ -76,15 +76,15 @@ fn hyperloglog_test_merge() {
     for k in &keys {
         hll.insert(k);
     }
-    assert_eq!(hll.estimate(), 3);
+    assert_eq!(hll.cardinality(), 3);
 
     let mut hll2 = HyperLogLog::<[u8; 64]>::default();
     let keys2 = ["test3", "test4", "test4", "test4", "test4", "test1"];
     for k in &keys2 {
         hll2.insert(k);
     }
-    assert_eq!(hll2.estimate(), 3);
+    assert_eq!(hll2.cardinality(), 3);
 
     hll.merge(&hll2);
-    assert_eq!(hll.estimate(), 4);
+    assert_eq!(hll.cardinality(), 4);
 }

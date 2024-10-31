@@ -7,13 +7,9 @@
 #![allow(clippy::unreadable_literal)]
 
 mod weights;
-use arcode::{
-    bitbit::{BitReader, BitWriter, MSB},
-    ArithmeticDecoder, ArithmeticEncoder, EOFKind, Model,
-};
 use siphasher::sip::SipHasher13;
+use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
-use std::{fmt::Debug, io::Cursor};
 use weights::{BIAS_DATA, RAW_ESTIMATE_DATA, THRESHOLD_DATA};
 
 /// An approximate counter for distinct elements.
@@ -39,8 +35,13 @@ impl<R: Registers> HyperLogLog<R> {
     }
 
     /// Estimate the number of distinct items inserted.
-    pub fn estimate(&self) -> u64 {
-        self.0.estimate().round() as u64
+    pub fn cardinality(&self) -> u64 {
+        let cardinality = self.0.cardinality();
+        debug_assert!(
+            cardinality >= 0.0 && cardinality.is_finite(),
+            "{cardinality}"
+        );
+        cardinality.round() as u64
     }
 
     pub fn merge(&mut self, other: &Self) {
@@ -167,7 +168,7 @@ pub trait Registers: Clone + PartialEq + Eq {
         }
     }
 
-    fn estimate(&self) -> f64 {
+    fn cardinality(&self) -> f64 {
         let registers = self.registers();
         let number_of_zero_registers = bytecount::count(registers, 0);
         if number_of_zero_registers > 0 {
@@ -201,18 +202,22 @@ pub trait Registers: Clone + PartialEq + Eq {
         self.registers_mut().fill(0);
     }
 
+    #[cfg(feature = "serde")]
     fn compress(&self) -> Vec<u8> {
+        use arcode::{bitbit::BitWriter, ArithmeticEncoder, EOFKind, Model};
+
         let data = self.registers();
 
         let mut model = Model::builder()
             .num_symbols(compression_symbols(Self::PRECISION))
             .eof(EOFKind::None)
             .build();
-        let compressed = Cursor::new(Vec::new());
+        let compressed = std::io::Cursor::new(Vec::new());
         let mut compressed_writer = BitWriter::new(compressed);
         let mut encoder = ArithmeticEncoder::new(COMPRESSION_PRECISION);
 
         for &sym in data {
+            debug_assert!(sym <= 64 - Self::PRECISION);
             encoder
                 .encode(
                     sym.min(64 - Self::PRECISION) as u32,
@@ -230,7 +235,13 @@ pub trait Registers: Clone + PartialEq + Eq {
         compressed_writer.get_ref().get_ref().clone()
     }
 
+    #[cfg(feature = "serde")]
     fn decompress(&mut self, data: &[u8]) -> Result<(), ()> {
+        use arcode::{
+            bitbit::{BitReader, MSB},
+            ArithmeticDecoder, EOFKind, Model,
+        };
+
         let mut model = Model::builder()
             .num_symbols(compression_symbols(Self::PRECISION))
             .eof(EOFKind::None)
@@ -249,8 +260,9 @@ pub trait Registers: Clone + PartialEq + Eq {
     }
 }
 
+#[cfg(feature = "serde")]
 const COMPRESSION_PRECISION: u64 = 48;
-
+#[cfg(feature = "serde")]
 fn compression_symbols(precision: u8) -> u32 {
     64 + 1 - precision as u32
 }
